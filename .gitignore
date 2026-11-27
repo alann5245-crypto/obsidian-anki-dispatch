@@ -1,0 +1,8 @@
+node_modules/
+main.js
+*.zip
+.env
+data.json
+queue-media/
+.DS_Store
+*.log
