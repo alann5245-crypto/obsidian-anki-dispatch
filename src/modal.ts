@@ -1,4 +1,4 @@
-import { App, Modal, setIcon } from "obsidian";
+import { App, Modal } from "obsidian";
 import { CardComposer, type ComposerHostBridge } from "./composer";
 
 export class QuickDispatchModal extends Modal {
@@ -24,15 +24,13 @@ export class QuickDispatchModal extends Modal {
     contentEl.empty();
 
     const header = contentEl.createDiv({ cls: "ad-modal-head" });
-    const titleWrap = header.createDiv({ cls: "ad-modal-title" });
-    const iconSpan = titleWrap.createSpan({ cls: "ad-icon-inline ad-teal" });
-    setIcon(iconSpan, "send");
-    titleWrap.createSpan({ text: "Anki Dispatch — Quick Capture & Deck Router" });
+    header.createSpan({ cls: "ad-modal-title", text: "Anki Dispatch" });
 
-    header.createSpan({
-      cls: `ad-status-pill ${this.host.isAnkiOnline() ? "is-online" : "is-offline"}`,
-      text: this.host.isAnkiOnline() ? "Anki Online" : "Offline Queue"
+    const status = header.createSpan({
+      cls: `ad-status-chip ${this.host.isAnkiOnline() ? "is-online" : "is-offline"}`
     });
+    status.createSpan({ cls: "ad-status-dot" });
+    status.createSpan({ text: this.host.isAnkiOnline() ? "Online" : "Queue" });
 
     const body = contentEl.createDiv({ cls: "ad-modal-body" });
     this.composer = new CardComposer(body, this.host, {

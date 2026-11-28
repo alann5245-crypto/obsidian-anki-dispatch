@@ -1,9 +1,9 @@
 {
   "id": "anki-dispatch",
   "name": "Anki Dispatch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Zero-clutter flashcard studio & fuzzy Anki deck router. Keep Markdown notes 100% pure while creating, previewing, routing, and editing Anki cards at localhost speed.",
+  "description": "Minimalist flashcard studio & fuzzy Anki deck router. Keep Markdown notes 100% pure while creating, previewing, routing, and editing Anki cards at localhost speed.",
   "author": "alann5245-crypto",
   "authorUrl": "https://github.com/alann5245-crypto",
   "isDesktopOnly": false

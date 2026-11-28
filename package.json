@@ -1,7 +1,7 @@
 {
   "name": "anki-dispatch",
-  "version": "1.0.0",
-  "description": "Zero-clutter Obsidian flashcard studio & smart Anki deck router: 100% clean notes, Ctrl+O fuzzy deck combobox, floating selection bar, live Cloze preview, and 0-byte auto-purge offline queue.",
+  "version": "1.1.0",
+  "description": "Minimalist Obsidian flashcard studio & smart Anki deck router: 100% clean notes, Ctrl+O fuzzy deck combobox, floating selection bar, live Cloze preview, and 0-byte auto-purge offline queue.",
   "private": true,
   "type": "module",
   "scripts": {

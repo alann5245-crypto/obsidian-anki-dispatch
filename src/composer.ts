@@ -1,4 +1,4 @@
-import { setIcon, type TFile } from "obsidian";
+import { setIcon, setTooltip, type TFile } from "obsidian";
 import {
   ankiHtmlToEditableText,
   appendSourceFooter,
@@ -50,6 +50,7 @@ export class CardComposer {
   private opts: CardComposerOptions;
 
   private contextText = "";
+  private contextExpanded = false;
   private selectedDeck = "Default";
   private selectedModel = "Basic";
   private editingCard: AnkiNoteSummary | null = null;
@@ -71,7 +72,7 @@ export class CardComposer {
   private submitBtnEl!: HTMLButtonElement;
   private submitLabelEl!: HTMLElement;
   private cancelEditBtnEl!: HTMLButtonElement;
-  private modeBadgeEl!: HTMLElement;
+  private previewToggleBtnEl!: HTMLButtonElement;
   private customModelSelectEl!: HTMLSelectElement;
   private tabBtns: Map<string, HTMLButtonElement> = new Map();
 
@@ -80,6 +81,7 @@ export class CardComposer {
   private dropdownOptions: Array<{ deckName: string; isCreate: boolean }> = [];
   private activeOptionIdx = 0;
   private dupTimer: ReturnType<typeof setTimeout> | null = null;
+  private feedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(containerEl: HTMLElement, host: ComposerHostBridge, opts: CardComposerOptions) {
     this.containerEl = containerEl;
@@ -97,20 +99,22 @@ export class CardComposer {
 
     await this.syncDefaultDeckForActiveNote();
 
-    // 1. Reference Context Box (Anti-Collector's Fallacy)
-    this.contextWrapEl = this.containerEl.createDiv({ cls: "ad-context-box" });
-    const ctxHead = this.contextWrapEl.createDiv({ cls: "ad-context-head" });
-    const ctxTitle = ctxHead.createDiv({ cls: "ad-context-title" });
-    const quoteIcon = ctxTitle.createSpan({ cls: "ad-icon-inline" });
-    setIcon(quoteIcon, "quote");
-    ctxTitle.createSpan({ text: "Reference context (reformulate in your own words)" });
+    // 1. Minimal 2-Line Quote Strip (Zero prose instructions; icon actions only)
+    this.contextWrapEl = this.containerEl.createDiv({ cls: "ad-quote-strip" });
+    this.contextQuoteEl = this.contextWrapEl.createDiv({ cls: "ad-quote-text" });
+    this.contextQuoteEl.addEventListener("click", () => {
+      this.contextExpanded = !this.contextExpanded;
+      this.contextQuoteEl.toggleClass("is-expanded", this.contextExpanded);
+    });
 
-    const ctxActions = ctxHead.createDiv({ cls: "ad-context-actions" });
+    const ctxActions = this.contextWrapEl.createDiv({ cls: "ad-quote-actions" });
     const toClozeBtn = ctxActions.createEl("button", {
       type: "button",
-      cls: "ad-link-btn",
-      text: "Send to Cloze"
+      cls: "ad-icon-btn",
+      attr: { "aria-label": "Insert quote as Cloze" }
     });
+    setIcon(toClozeBtn, "braces");
+    setTooltip(toClozeBtn, "Send to Cloze");
     toClozeBtn.addEventListener("click", () => {
       if (!this.contextText) return;
       void this.switchModel("Cloze", { Text: this.contextText });
@@ -119,49 +123,42 @@ export class CardComposer {
     const clearCtxBtn = ctxActions.createEl("button", {
       type: "button",
       cls: "ad-icon-btn",
-      attr: { "aria-label": "Dismiss reference context", title: "Dismiss context" }
+      attr: { "aria-label": "Dismiss quote" }
     });
     setIcon(clearCtxBtn, "x");
+    setTooltip(clearCtxBtn, "Dismiss");
     clearCtxBtn.addEventListener("click", () => this.setReferenceContext(""));
-
-    this.contextQuoteEl = this.contextWrapEl.createDiv({ cls: "ad-context-quote" });
     this.refreshContextBox();
 
-    // 2. Raycast-Grade Fuzzy Deck Combobox
+    // 2. DECK — Minimal Labeled Fuzzy Combobox
     const deckGroup = this.containerEl.createDiv({ cls: "ad-field-group ad-deck-combo" });
-    const deckLabelRow = deckGroup.createDiv({ cls: "ad-label-row" });
-    deckLabelRow.createEl("label", {
-      cls: "ad-label",
-      text: "Target Anki Deck"
-    });
-    deckLabelRow.createSpan({
-      cls: "ad-hint",
-      text: "Type A::B to create"
-    });
+    deckGroup.createEl("label", { cls: "ad-micro-label", text: "DECK" });
 
     const deckInputShell = deckGroup.createDiv({ cls: "ad-deck-shell" });
-    const folderIcon = deckInputShell.createSpan({ cls: "ad-icon-inline ad-teal" });
-    setIcon(folderIcon, "folder-tree");
+    const folderIcon = deckInputShell.createSpan({ cls: "ad-icon-inline ad-muted-icon" });
+    setIcon(folderIcon, "folder");
 
     this.deckInputEl = deckInputShell.createEl("input", {
       type: "text",
       cls: "ad-deck-input",
       value: this.selectedDeck,
-      placeholder: "Fuzzy search deck or type Parent::Child::New...",
+      placeholder: "Deck...",
       attr: {
         role: "combobox",
         autocomplete: "off",
+        "aria-label": "Deck",
         "aria-expanded": "false"
       }
     });
 
-    const clearDeckBtn = deckInputShell.createEl("button", {
+    const chevronBtn = deckInputShell.createEl("button", {
       type: "button",
       cls: "ad-icon-btn",
-      attr: { "aria-label": "Search or switch deck", title: "Search decks" }
+      attr: { "aria-label": "Switch deck" }
     });
-    setIcon(clearDeckBtn, "search");
-    clearDeckBtn.addEventListener("click", () => {
+    setIcon(chevronBtn, "chevrons-up-down");
+    setTooltip(chevronBtn, "Switch deck");
+    chevronBtn.addEventListener("click", () => {
       this.deckInputEl.select();
       this.deckInputEl.focus();
       this.openDeckDropdown(this.deckInputEl.value === this.selectedDeck ? "" : this.deckInputEl.value);
@@ -171,31 +168,58 @@ export class CardComposer {
       cls: "ad-deck-dropdown",
       attr: { role: "listbox" }
     });
-
     this.wireDeckComboboxEvents(deckGroup);
 
-    // 3. Note Type Segmented Tabs + Dynamic Custom Model Select
-    const modelGroup = this.containerEl.createDiv({ cls: "ad-field-group" });
-    const modelLabelRow = modelGroup.createDiv({ cls: "ad-label-row" });
-    modelLabelRow.createSpan({ cls: "ad-label", text: "Note Type" });
+    // 3. TYPE — Segmented Control + Compact Icon Micro-Tools on One Clean Row
+    const typeGroup = this.containerEl.createDiv({ cls: "ad-field-group" });
+    const typeHead = typeGroup.createDiv({ cls: "ad-label-row" });
+    typeHead.createSpan({ cls: "ad-micro-label", text: "TYPE" });
 
-    const previewToggleBtn = modelLabelRow.createEl("button", {
+    const microTools = typeHead.createDiv({ cls: "ad-micro-tools" });
+    this.dupHintEl = microTools.createSpan({ cls: "ad-dup-dot" });
+
+    const clozeBtn = microTools.createEl("button", {
       type: "button",
-      cls: "ad-chip-btn",
-      attr: { "aria-pressed": "false", title: "Preview rendered Anki card" }
+      cls: "ad-icon-btn",
+      attr: { "aria-label": "Wrap Cloze deletion" }
     });
-    const eyeSpan = previewToggleBtn.createSpan({ cls: "ad-icon-inline" });
-    setIcon(eyeSpan, "eye");
-    const eyeText = previewToggleBtn.createSpan({ text: "Preview" });
-    previewToggleBtn.addEventListener("click", () => {
+    setIcon(clozeBtn, "braces");
+    setTooltip(clozeBtn, "Cloze (Mod+Shift+C)");
+    clozeBtn.addEventListener("click", () => this.applyClozeToFocusedField(false));
+
+    const mathBtn = microTools.createEl("button", {
+      type: "button",
+      cls: "ad-icon-btn",
+      attr: { "aria-label": "Insert LaTeX math" }
+    });
+    setIcon(mathBtn, "sigma");
+    setTooltip(mathBtn, "Math ($...$)");
+    mathBtn.addEventListener("click", () => this.wrapSelectionInFocusedField("$", "$", "x"));
+
+    const codeBtn = microTools.createEl("button", {
+      type: "button",
+      cls: "ad-icon-btn",
+      attr: { "aria-label": "Wrap inline code" }
+    });
+    setIcon(codeBtn, "code");
+    setTooltip(codeBtn, "Code (`...`)");
+    codeBtn.addEventListener("click", () => this.wrapSelectionInFocusedField("`", "`", "code"));
+
+    this.previewToggleBtnEl = microTools.createEl("button", {
+      type: "button",
+      cls: "ad-icon-btn",
+      attr: { "aria-label": "Toggle card preview", "aria-pressed": "false" }
+    });
+    setIcon(this.previewToggleBtnEl, "eye");
+    setTooltip(this.previewToggleBtnEl, "Preview card");
+    this.previewToggleBtnEl.addEventListener("click", () => {
       this.previewMode = !this.previewMode;
-      previewToggleBtn.setAttribute("aria-pressed", String(this.previewMode));
-      previewToggleBtn.toggleClass("is-active", this.previewMode);
-      eyeText.setText(this.previewMode ? "Edit fields" : "Preview");
+      this.previewToggleBtnEl.setAttribute("aria-pressed", String(this.previewMode));
+      this.previewToggleBtnEl.toggleClass("is-active", this.previewMode);
       this.renderPreviewOrFields();
     });
 
-    const typeBar = modelGroup.createDiv({ cls: "ad-type-bar", attr: { role: "tablist" } });
+    const typeBar = typeGroup.createDiv({ cls: "ad-type-bar", attr: { role: "tablist" } });
     const coreTabs: Array<{ model: string; label: string }> = [
       { model: "Basic", label: "Basic" },
       { model: "Basic (and reversed card)", label: "Reversed" },
@@ -216,7 +240,7 @@ export class CardComposer {
 
     this.customModelSelectEl = typeBar.createEl("select", {
       cls: "ad-custom-model-select",
-      attr: { "aria-label": "Select custom Anki Note Type" }
+      attr: { "aria-label": "Custom Note Type" }
     });
     this.populateCustomModelDropdown();
     this.customModelSelectEl.addEventListener("change", () => {
@@ -225,39 +249,7 @@ export class CardComposer {
       }
     });
 
-    // 4. Formatting & Cloze Micro-Toolbar
-    const toolbar = this.containerEl.createDiv({ cls: "ad-toolbar" });
-    const toolsLeft = toolbar.createDiv({ cls: "ad-tools-left" });
-
-    const clozeBtn = toolsLeft.createEl("button", {
-      type: "button",
-      cls: "ad-chip-btn",
-      attr: { title: "Wrap selection in {{c1::...}} (Ctrl/Cmd+Shift+C)" }
-    });
-    const bracesIcon = clozeBtn.createSpan({ cls: "ad-icon-inline" });
-    setIcon(bracesIcon, "braces");
-    clozeBtn.createSpan({ text: "Cloze {{c1}}" });
-    clozeBtn.addEventListener("click", () => this.applyClozeToFocusedField(false));
-
-    const mathBtn = toolsLeft.createEl("button", {
-      type: "button",
-      cls: "ad-chip-btn",
-      text: "Math $x$",
-      attr: { title: "Insert LaTeX math (auto-converted to Anki MathJax)" }
-    });
-    mathBtn.addEventListener("click", () => this.wrapSelectionInFocusedField("$", "$", "x^2"));
-
-    const codeBtn = toolsLeft.createEl("button", {
-      type: "button",
-      cls: "ad-chip-btn",
-      text: "Code",
-      attr: { title: "Wrap inline code" }
-    });
-    codeBtn.addEventListener("click", () => this.wrapSelectionInFocusedField("`", "`", "code"));
-
-    this.dupHintEl = toolbar.createDiv({ cls: "ad-dup-hint" });
-
-    // 5. Dynamic Fields + Live Preview Flipper Container
+    // 4. FRONT / BACK (or Dynamic Model Fields) + Live Preview Flipper
     this.fieldsWrapEl = this.containerEl.createDiv({ cls: "ad-fields-wrap" });
     this.previewWrapEl = this.containerEl.createDiv({ cls: "ad-preview-wrap is-hidden" });
 
@@ -265,60 +257,64 @@ export class CardComposer {
       this.opts.initialClozeMode && this.contextText ? { Text: this.contextText } : undefined
     );
 
-    // 6. Optional Tags Row
-    const tagsRow = this.containerEl.createDiv({ cls: "ad-tags-row" });
-    const tagIcon = tagsRow.createSpan({ cls: "ad-icon-inline" });
-    setIcon(tagIcon, "tag");
-    this.tagsInputEl = tagsRow.createEl("input", {
+    // 5. TAGS — Always Visible, Clean Uppercase Micro-Label
+    const tagsGroup = this.containerEl.createDiv({ cls: "ad-field-group" });
+    tagsGroup.createEl("label", { cls: "ad-micro-label", text: "TAGS" });
+    this.tagsInputEl = tagsGroup.createEl("input", {
       type: "text",
-      cls: "ad-tags-input",
-      placeholder: "Extra Anki tags (space-separated, optional)..."
+      cls: "ad-input",
+      placeholder: "",
+      attr: { "aria-label": "Tags" }
     });
 
-    // 7. Accessible Inline Feedback Banner
+    // 6. Compact Inline Status Toast
     this.feedbackEl = this.containerEl.createDiv({
       cls: "ad-feedback is-hidden",
       attr: { role: "alert", tabindex: "-1" }
     });
 
-    // 8. Submit Action Row
+    // 7. Minimal Action Footer
     const footer = this.containerEl.createDiv({ cls: "ad-composer-footer" });
     const footerLeft = footer.createDiv({ cls: "ad-footer-left" });
-    this.modeBadgeEl = footerLeft.createSpan({
-      cls: "ad-subtle-note",
-      text: this.opts.surface === "modal" ? "Ctrl/Cmd+Enter to submit" : "100% pure .md note"
-    });
 
     if (this.opts.surface === "modal") {
-      const rapidWrap = footerLeft.createEl("label", { cls: "ad-rapid-toggle" });
-      const rapidChk = rapidWrap.createEl("input", { type: "checkbox" });
-      rapidChk.checked = this.rapidFire;
-      rapidChk.addEventListener("change", () => {
-        this.rapidFire = rapidChk.checked;
+      const repeatBtn = footerLeft.createEl("button", {
+        type: "button",
+        cls: `ad-icon-toggle ${this.rapidFire ? "is-active" : ""}`,
+        attr: { "aria-pressed": String(this.rapidFire), "aria-label": "Keep modal open after adding" }
       });
-      rapidWrap.createSpan({ text: "Rapid-fire" });
+      const repeatIcon = repeatBtn.createSpan({ cls: "ad-icon-inline" });
+      setIcon(repeatIcon, "repeat");
+      repeatBtn.createSpan({ text: "Repeat" });
+      setTooltip(repeatBtn, "Rapid-fire: stay open for next card");
+      repeatBtn.addEventListener("click", () => {
+        this.rapidFire = !this.rapidFire;
+        repeatBtn.setAttribute("aria-pressed", String(this.rapidFire));
+        repeatBtn.toggleClass("is-active", this.rapidFire);
+      });
     }
 
     const footerActions = footer.createDiv({ cls: "ad-footer-actions" });
     this.cancelEditBtnEl = footerActions.createEl("button", {
       type: "button",
-      cls: "ad-btn ad-btn-secondary is-hidden",
+      cls: "ad-btn ad-btn-ghost is-hidden",
       text: "Cancel"
     });
     this.cancelEditBtnEl.addEventListener("click", () => void this.resetFormState());
 
     this.submitBtnEl = footerActions.createEl("button", {
       type: "button",
-      cls: "ad-btn ad-btn-cta"
+      cls: "ad-btn ad-btn-accent"
     });
-    const sendIcon = this.submitBtnEl.createSpan({ cls: "ad-icon-inline" });
-    setIcon(sendIcon, "send");
     this.submitLabelEl = this.submitBtnEl.createSpan({
-      text: this.host.isAnkiOnline() ? "Add to Anki" : "Save to Queue"
+      text: this.host.isAnkiOnline() ? "Add" : "Queue"
     });
+    const enterIcon = this.submitBtnEl.createSpan({ cls: "ad-icon-inline" });
+    setIcon(enterIcon, "corner-down-left");
+    setTooltip(this.submitBtnEl, "Submit (Mod+Enter)");
     this.submitBtnEl.addEventListener("click", () => void this.submit());
 
-    // Keyboard shortcuts inside composer
+    // Composer keyboard shortcuts
     this.containerEl.addEventListener("keydown", (ev: KeyboardEvent) => {
       if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && ev.key.toLowerCase() === "c") {
         ev.preventDefault();
@@ -332,6 +328,7 @@ export class CardComposer {
 
   setReferenceContext(text: string, switchToCloze = false): void {
     this.contextText = text.trim();
+    this.contextExpanded = false;
     this.refreshContextBox();
     if (switchToCloze && this.contextText) {
       void this.switchModel("Cloze", { Text: this.contextText });
@@ -341,9 +338,9 @@ export class CardComposer {
   refreshOnlineState(): void {
     if (!this.submitLabelEl) return;
     if (this.editingCard) {
-      this.submitLabelEl.setText("Update Card");
+      this.submitLabelEl.setText("Save");
     } else {
-      this.submitLabelEl.setText(this.host.isAnkiOnline() ? "Add to Anki" : "Save to Queue");
+      this.submitLabelEl.setText(this.host.isAnkiOnline() ? "Add" : "Queue");
     }
     this.populateCustomModelDropdown();
   }
@@ -366,6 +363,8 @@ export class CardComposer {
   async loadCardForEdit(card: AnkiNoteSummary): Promise<void> {
     this.editingCard = card;
     this.previewMode = false;
+    this.previewToggleBtnEl?.removeClass("is-active");
+    this.previewToggleBtnEl?.setAttribute("aria-pressed", "false");
     this.selectedDeck = card.deckName;
     if (this.deckInputEl) this.deckInputEl.value = card.deckName;
 
@@ -379,8 +378,7 @@ export class CardComposer {
     if (this.tagsInputEl) this.tagsInputEl.value = userTags.join(" ");
 
     this.cancelEditBtnEl.removeClass("is-hidden");
-    this.submitLabelEl.setText("Update Card");
-    this.modeBadgeEl.setText(`Editing #${card.noteId}`);
+    this.submitLabelEl.setText("Save");
     this.focusFirstField();
   }
 
@@ -400,6 +398,7 @@ export class CardComposer {
       return;
     }
     this.contextWrapEl.removeClass("is-hidden");
+    this.contextQuoteEl.toggleClass("is-expanded", this.contextExpanded);
     this.contextQuoteEl.setText(this.contextText);
   }
 
@@ -413,7 +412,7 @@ export class CardComposer {
     this.customModelSelectEl.empty();
     this.customModelSelectEl.createEl("option", {
       value: "",
-      text: customModels.length > 0 ? `More (${customModels.length})...` : "More..."
+      text: customModels.length > 0 ? `More (${customModels.length})` : "More"
     });
     for (const m of customModels) {
       const opt = this.customModelSelectEl.createEl("option", { value: m, text: m });
@@ -448,8 +447,8 @@ export class CardComposer {
     effectiveFields.forEach((fieldName, idx) => {
       const group = this.fieldsWrapEl.createDiv({ cls: "ad-field-group" });
       group.createEl("label", {
-        cls: "ad-label",
-        text: this.formatFieldLabel(fieldName, idx)
+        cls: "ad-micro-label",
+        text: fieldName.toUpperCase()
       });
 
       const initialVal =
@@ -462,11 +461,11 @@ export class CardComposer {
             type: "text",
             cls: "ad-input",
             value: initialVal,
-            placeholder: this.getPlaceholder(fieldName, idx)
+            placeholder: ""
           })
         : group.createEl("textarea", {
             cls: "ad-textarea",
-            placeholder: this.getPlaceholder(fieldName, idx)
+            placeholder: ""
           });
 
       if (!useCompactInput) {
@@ -482,7 +481,6 @@ export class CardComposer {
         inputEl.addEventListener("input", () => this.scheduleDuplicateCheck(fieldName, inputEl.value));
       }
 
-      // Ctrl+V screenshot paste handler
       inputEl.addEventListener("paste", (ev: ClipboardEvent) => {
         const items = ev.clipboardData?.items;
         if (!items) return;
@@ -501,22 +499,6 @@ export class CardComposer {
 
       this.fieldInputs.set(fieldName, inputEl);
     });
-  }
-
-  private formatFieldLabel(fieldName: string, idx: number): string {
-    if (this.selectedModel === "Basic" && fieldName === "Front") return "Front (Prompt)";
-    if (this.selectedModel === "Basic" && fieldName === "Back") return "Back (Atomic Answer)";
-    if (this.selectedModel === "Cloze" && fieldName === "Text") return "Text (with {{c1::...}} deletions)";
-    return idx === 0 ? `${fieldName} *` : fieldName;
-  }
-
-  private getPlaceholder(fieldName: string, idx: number): string {
-    if (this.selectedModel === "Cloze" && idx === 0) {
-      return "Select keywords and press Ctrl/Cmd+Shift+C to wrap {{c1::...}}";
-    }
-    if (idx === 0) return "Write a concise retrieval prompt in your own words...";
-    if (idx === 1) return "One atomic fact (supports $LaTeX$, `code`, and Ctrl+V images)...";
-    return `Enter ${fieldName}...`;
   }
 
   private getFirstFieldValue(): string {
@@ -541,30 +523,34 @@ export class CardComposer {
 
     const cardSurface = this.previewWrapEl.createDiv({ cls: "ad-preview-card" });
     const head = cardSurface.createDiv({ cls: "ad-preview-head" });
-    head.createSpan({ cls: "ad-preview-badge", text: `${this.selectedModel} · ${this.selectedDeck}` });
+    head.createSpan({ cls: "ad-micro-label", text: this.selectedModel.toUpperCase() });
 
     if (this.selectedModel === "Cloze" || /\{\{c\d+::/.test(primaryRaw)) {
       const revealBtn = head.createEl("button", {
         type: "button",
-        cls: "ad-link-btn",
-        text: this.clozePreviewRevealed ? "Hide [...]" : "Reveal Cloze"
+        cls: "ad-icon-btn",
+        attr: { "aria-label": this.clozePreviewRevealed ? "Hide Cloze" : "Reveal Cloze" }
       });
+      setIcon(revealBtn, this.clozePreviewRevealed ? "eye-off" : "eye");
+      setTooltip(revealBtn, this.clozePreviewRevealed ? "Hide answer" : "Reveal answer");
       revealBtn.addEventListener("click", () => {
         this.clozePreviewRevealed = !this.clozePreviewRevealed;
         this.renderPreviewOrFields();
       });
 
       const frontFace = cardSurface.createDiv({ cls: "ad-preview-face" });
-      frontFace.innerHTML = renderClozePreviewHtml(primaryRaw || "(Empty Cloze text)", this.clozePreviewRevealed);
+      frontFace.innerHTML = renderClozePreviewHtml(primaryRaw || "—", this.clozePreviewRevealed);
       if (secondaryRaw.trim() && this.clozePreviewRevealed) {
         const extra = cardSurface.createDiv({ cls: "ad-preview-back" });
         extra.innerHTML = markdownToAnkiHtml(secondaryRaw);
       }
     } else {
       const frontFace = cardSurface.createDiv({ cls: "ad-preview-face" });
-      frontFace.innerHTML = markdownToAnkiHtml(primaryRaw || "(Empty front)");
-      const backFace = cardSurface.createDiv({ cls: "ad-preview-back" });
-      backFace.innerHTML = markdownToAnkiHtml(secondaryRaw || "(Empty back)");
+      frontFace.innerHTML = markdownToAnkiHtml(primaryRaw || "—");
+      if (secondaryRaw.trim()) {
+        const backFace = cardSurface.createDiv({ cls: "ad-preview-back" });
+        backFace.innerHTML = markdownToAnkiHtml(secondaryRaw);
+      }
     }
   }
 
@@ -607,9 +593,9 @@ export class CardComposer {
       const imgTag = `<img src="${saved.filename}">`;
       const pos = target.selectionStart ?? target.value.length;
       target.value = target.value.slice(0, pos) + imgTag + target.value.slice(pos);
-      this.showFeedback("success", `Attached image ${saved.filename}`);
+      this.showFeedback("success", saved.filename);
     } catch (err) {
-      this.showFeedback("error", `Failed to attach pasted image: ${(err as Error).message}`);
+      this.showFeedback("error", (err as Error).message);
     }
   }
 
@@ -620,11 +606,7 @@ export class CardComposer {
 
     this.dupTimer = setTimeout(async () => {
       const count = await checkDuplicateFront(this.host.getSettings().ankiConnectUrl, fieldName, value);
-      if (count > 0) {
-        this.dupHintEl.setText(`Duplicate front (${count} in Anki)`);
-      } else {
-        this.dupHintEl.setText("");
-      }
+      this.dupHintEl.setText(count > 0 ? `Duplicate (${count})` : "");
     }, 380);
   }
 
@@ -694,13 +676,6 @@ export class CardComposer {
     this.dropdownOptions = [];
     this.activeOptionIdx = 0;
 
-    const badgeLabels: Record<string, string> = {
-      note: "Selected",
-      folder: "Folder rule",
-      pinned: "Pinned",
-      recent: "Recent"
-    };
-
     ranked.options.slice(0, 30).forEach((opt, idx) => {
       this.dropdownOptions.push({ deckName: opt.deckName, isCreate: false });
       const row = this.deckDropdownEl.createDiv({
@@ -715,10 +690,6 @@ export class CardComposer {
       }
       pathSpan.createSpan({ cls: "ad-deck-leaf", text: opt.leafName });
 
-      if (opt.badge && badgeLabels[opt.badge]) {
-        selectBtn.createSpan({ cls: "ad-deck-badge", text: badgeLabels[opt.badge] });
-      }
-
       selectBtn.addEventListener("mousedown", (e) => {
         e.preventDefault();
         this.commitDeckChoice(opt.deckName);
@@ -727,12 +698,10 @@ export class CardComposer {
       const pinBtn = row.createEl("button", {
         type: "button",
         cls: `ad-pin-btn ${opt.isPinned ? "is-pinned" : ""}`,
-        attr: {
-          "aria-label": opt.isPinned ? `Unpin ${opt.deckName}` : `Pin ${opt.deckName}`,
-          title: opt.isPinned ? "Unpin deck" : "Pin deck to top"
-        }
+        attr: { "aria-label": opt.isPinned ? `Unpin ${opt.deckName}` : `Pin ${opt.deckName}` }
       });
       setIcon(pinBtn, "star");
+      setTooltip(pinBtn, opt.isPinned ? "Unpin" : "Pin");
       pinBtn.addEventListener("mousedown", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -751,13 +720,13 @@ export class CardComposer {
         cls: `ad-deck-opt ad-deck-create ${createIdx === 0 ? "is-active" : ""}`,
         attr: { role: "option" }
       });
-      const plusIcon = createRow.createSpan({ cls: "ad-icon-inline ad-teal" });
-      setIcon(plusIcon, "plus-circle");
+      const plusIcon = createRow.createSpan({ cls: "ad-icon-inline ad-accent-icon" });
+      setIcon(plusIcon, "plus");
       createRow.createSpan({
         cls: "ad-deck-path",
-        text: `Create new subdeck: "${newDeck}"`
+        text: newDeck
       });
-      createRow.createSpan({ cls: "ad-deck-badge is-create", text: "New" });
+      createRow.createSpan({ cls: "ad-deck-badge", text: "New" });
       createRow.addEventListener("mousedown", (e) => {
         e.preventDefault();
         this.commitDeckChoice(newDeck);
@@ -794,7 +763,6 @@ export class CardComposer {
   private async submit(): Promise<void> {
     const deckName = normalizeDeckPath(this.deckInputEl.value || this.selectedDeck);
     if (!deckName) {
-      this.showFeedback("error", "Please select or enter a target Anki deck.");
       this.deckInputEl.focus();
       return;
     }
@@ -803,7 +771,6 @@ export class CardComposer {
     const entries = Array.from(this.fieldInputs.entries());
     const primaryEntry = entries[0];
     if (!primaryEntry || !primaryEntry[1].value.trim()) {
-      this.showFeedback("error", `Field "${primaryEntry?.[0] ?? "Front"}" cannot be empty.`);
       primaryEntry?.[1]?.focus();
       return;
     }
@@ -815,7 +782,7 @@ export class CardComposer {
 
     const extraTags = this.tagsInputEl.value
       .split(/[\s,]+/)
-      .map((t) => t.trim())
+      .map((t) => t.trim().replace(/^#+/, ""))
       .filter(Boolean);
 
     this.submitBtnEl.disabled = true;
@@ -838,12 +805,13 @@ export class CardComposer {
       const wasEditing = Boolean(editingNoteId);
       await this.resetFormState(true);
 
+      const leaf = deckName.split("::").pop() || deckName;
       if (res.status === "updated") {
-        this.showFeedback("success", `Updated card in "${deckName}".`);
+        this.showFeedback("success", `Saved · ${leaf}`);
       } else if (res.status === "added") {
-        this.showFeedback("success", `Added card to "${deckName}".`);
+        this.showFeedback("success", `Added · ${leaf}`);
       } else {
-        this.showFeedback("success", `Anki offline: Queued card for "${deckName}".`);
+        this.showFeedback("success", `Queued · ${leaf}`);
       }
 
       this.opts.onSubmitted?.({
@@ -851,7 +819,7 @@ export class CardComposer {
         rapidFire: !wasEditing && this.rapidFire
       });
     } catch (err) {
-      this.showFeedback("error", `Dispatch failed: ${(err as Error).message}`);
+      this.showFeedback("error", (err as Error).message);
     } finally {
       this.submitBtnEl.disabled = false;
     }
@@ -862,6 +830,8 @@ export class CardComposer {
     this.queuedMediaRefs = [];
     this.previewMode = false;
     this.clozePreviewRevealed = false;
+    this.previewToggleBtnEl?.removeClass("is-active");
+    this.previewToggleBtnEl?.setAttribute("aria-pressed", "false");
     this.dupHintEl.setText("");
 
     if (!keepDeckAndModel) {
@@ -875,15 +845,19 @@ export class CardComposer {
     this.fieldsWrapEl.removeClass("is-hidden");
     this.cancelEditBtnEl.addClass("is-hidden");
     this.refreshOnlineState();
-    this.modeBadgeEl.setText(this.opts.surface === "modal" ? "Ctrl/Cmd+Enter to submit" : "100% pure .md note");
     this.focusFirstField();
   }
 
   private showFeedback(kind: "success" | "error", message: string): void {
+    if (this.feedbackTimer) clearTimeout(this.feedbackTimer);
     this.feedbackEl.removeClass("is-hidden", "is-success", "is-error");
     this.feedbackEl.addClass(kind === "success" ? "is-success" : "is-error");
     this.feedbackEl.setText(message);
-    if (kind === "error") this.feedbackEl.focus();
+    if (kind === "error") {
+      this.feedbackEl.focus();
+    } else {
+      this.feedbackTimer = setTimeout(() => this.feedbackEl.addClass("is-hidden"), 2200);
+    }
   }
 }
 

@@ -58,8 +58,7 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
     this.registerView(ANKI_STUDIO_VIEW_TYPE, (leaf) => new AnkiStudioView(leaf, this));
     this.addSettingTab(new AnkiDispatchSettingTab(this.app, this));
 
-    // Ribbon & Status Bar (0ms synchronous DOM setup)
-    this.addRibbonIcon("layers", "Open Anki Studio (Create & Route Flashcards)", () => {
+    this.addRibbonIcon("layers", "Anki Studio", () => {
       void this.activateStudioSidebar();
     });
 
@@ -74,10 +73,9 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
     });
     this.updateStatusBar();
 
-    // Commands
     this.addCommand({
       id: "open-quick-dispatch",
-      name: "Create flashcard & choose Anki deck (Quick Dispatch)",
+      name: "Quick capture card",
       hotkeys: [{ modifiers: ["Mod", "Shift"], key: "a" }],
       callback: () => {
         const selection = this.getCurrentEditorSelection();
@@ -87,7 +85,7 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
 
     this.addCommand({
       id: "quick-cloze-from-selection",
-      name: "Create Cloze card from selection",
+      name: "Create Cloze from selection",
       callback: () => {
         const selection = this.getCurrentEditorSelection();
         void this.openCaptureSurface(selection, true);
@@ -96,7 +94,7 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
 
     this.addCommand({
       id: "open-anki-studio-sidebar",
-      name: "Open Anki Studio sidebar",
+      name: "Open Anki Studio",
       callback: () => {
         void this.activateStudioSidebar();
       }
@@ -104,26 +102,25 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
 
     this.addCommand({
       id: "flush-offline-queue",
-      name: "Flush pending offline queue to Anki",
+      name: "Flush offline queue",
       callback: () => {
         void this.flushOfflineQueue(true);
       }
     });
 
-    // Editor Right-Click Context Menu
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu: Menu, editor) => {
         const sel = editor.getSelection()?.trim() ?? "";
         menu.addItem((item) => {
           item
-            .setTitle(sel ? "Anki Dispatch: Create card from selection" : "Anki Dispatch: Create flashcard")
-            .setIcon("send")
+            .setTitle("Anki: New Card")
+            .setIcon("plus")
             .onClick(() => void this.openCaptureSurface(sel, false));
         });
         if (sel) {
           menu.addItem((item) => {
             item
-              .setTitle("Anki Dispatch: Send selection to Cloze")
+              .setTitle("Anki: Cloze")
               .setIcon("braces")
               .onClick(() => void this.openCaptureSurface(sel, true));
           });
@@ -131,7 +128,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       })
     );
 
-    // Debounced Active Leaf Change (O(1) frontmatter check, zero vault scan)
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         this.hideFloatingSelectionPill();
@@ -144,7 +140,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       })
     );
 
-    // Keep Obsidian deep-links fresh on file rename/move
     this.registerEvent(
       this.app.vault.on("rename", (file: TAbstractFile) => {
         if (file instanceof TFile && file.extension === "md") {
@@ -153,10 +148,8 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       })
     );
 
-    // Zero-keystroke-cost Floating Selection Pill
     this.mountFloatingSelectionListeners();
 
-    // Defer all network I/O until workspace finishes rendering (<2ms startup impact)
     this.app.workspace.onLayoutReady(() => {
       void this.refreshAnkiConnection(false);
     });
@@ -168,8 +161,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
     this.floatingPillEl = null;
     this.noteCardCache.clear();
   }
-
-  // ─── StudioViewBridge & ComposerHostBridge Implementation ──────────────────
 
   getSettings(): AnkiDispatchSettings {
     return this.settings;
@@ -247,7 +238,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       return { filename };
     }
 
-    // Offline safeguard: store binary in isolated temp folder, NEVER bloat data.json
     const mediaDir = normalizePath(`${this.manifest.dir ?? ".obsidian/plugins/anki-dispatch"}/queue-media`);
     if (!(await this.app.vault.adapter.exists(mediaDir))) {
       await this.app.vault.adapter.mkdir(mediaDir);
@@ -272,7 +262,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       ? await this.getNoteAnchorId(payload.targetFile, true)
       : null;
 
-    // Remember Deck choice for this Note and Recent list
     this.settings.recentDecks = pushBoundedUnique(this.settings.recentDecks, cleanDeck, 8);
     if (!this.settings.cachedDecks.includes(cleanDeck)) {
       this.settings.cachedDecks.unshift(cleanDeck);
@@ -297,7 +286,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
 
     const tags = buildCardTags(anchorId, payload.extraTags);
 
-    // 1. Update existing card (requires live AnkiConnect)
     if (payload.editingNoteId) {
       await updateCardInAnki(this.settings.ankiConnectUrl, {
         noteId: payload.editingNoteId,
@@ -311,7 +299,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       return { status: "updated", noteId: payload.editingNoteId };
     }
 
-    // 2. Live Add -> fall back to Self-Purging Queue if Anki Desktop was just closed
     if (this.ankiOnline) {
       try {
         await this.uploadAndPurgeQueuedMedia(payload.mediaRefs);
@@ -330,7 +317,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       }
     }
 
-    // 3. Offline Queue (auto-purges to 0 bytes upon next connection)
     const queueItem: QueuedCardItem = {
       queueId: generateNoteAnchorId(),
       createdAt: Date.now(),
@@ -371,14 +357,13 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
     const file = this.getActiveFile();
     const anchor = file ? await this.getNoteAnchorId(file, false) : null;
     if (anchor) this.noteCardCache.invalidate(anchor);
-    new Notice(`Deleted card #${noteId} from Anki.`);
   }
 
   async openCardInAnkiBrowser(noteId: number): Promise<void> {
     try {
       await openNoteInAnkiBrowser(this.settings.ankiConnectUrl, noteId);
     } catch (err) {
-      new Notice(`Could not open Anki Browser: ${(err as Error).message}`);
+      new Notice(`Anki Browser: ${(err as Error).message}`);
     }
   }
 
@@ -404,10 +389,10 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       if (this.settings.pendingQueue.length > 0) {
         await this.flushOfflineQueue(showNotice);
       } else if (showNotice) {
-        new Notice(`AnkiConnect Online (${this.lastLatencyMs}ms) · ${this.settings.cachedDecks.length} decks synced.`);
+        new Notice(`Anki Online (${this.lastLatencyMs}ms) · ${this.settings.cachedDecks.length} decks`);
       }
     } else if (showNotice) {
-      new Notice("Anki Desktop is currently closed — using Offline Queue mode.");
+      new Notice("Anki offline · Queue active");
     }
 
     this.notifyAllViewsStatusChanged();
@@ -429,7 +414,7 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       this.ankiOnline = ping.online;
       this.lastLatencyMs = ping.latencyMs;
       if (!this.ankiOnline) {
-        if (showNotice) new Notice("Cannot flush queue yet — Anki Desktop is closed.");
+        if (showNotice) new Notice("Anki offline");
         return { flushed: 0, remaining: this.settings.pendingQueue.length };
       }
 
@@ -443,19 +428,18 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
           tags: item.tags
         });
         if (item.noteAnchorId) this.noteCardCache.invalidate(item.noteAnchorId);
-        // Immediate shift purges item from data.json back to 0 bytes
         this.settings.pendingQueue.shift();
         flushed++;
       }
 
       await this.saveSettings();
       if (showNotice && flushed > 0) {
-        new Notice(`Anki Dispatch: Flushed ${flushed} ${flushed === 1 ? "card" : "cards"} to Anki (queue purged to 0 bytes).`);
+        new Notice(`Synced ${flushed} ${flushed === 1 ? "card" : "cards"}`);
       }
     } catch (err) {
       await this.saveSettings();
       if (showNotice) {
-        new Notice(`Flushed ${flushed} cards before error: ${(err as Error).message}`);
+        new Notice(`Sync error: ${(err as Error).message}`);
       }
     } finally {
       this.isFlushingQueue = false;
@@ -467,8 +451,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
 
     return { flushed, remaining: this.settings.pendingQueue.length };
   }
-
-  // ─── Navigation & Capture Surface Helpers ──────────────────────────────────
 
   async openCaptureSurface(selection: string, clozeMode: boolean): Promise<void> {
     this.hideFloatingSelectionPill();
@@ -492,8 +474,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
     await workspace.revealLeaf(leaf);
     return leaf.view instanceof AnkiStudioView ? leaf.view : null;
   }
-
-  // ─── Passive Floating Selection Pill (0ms keystroke cost) ──────────────────
 
   private mountFloatingSelectionListeners(): void {
     const scheduleSelectionCheck = () => {
@@ -556,13 +536,14 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
 
     this.floatingPillEl.empty();
 
+    // Ultra-compact [+ Card | { } Cloze]
     const dispatchBtn = this.floatingPillEl.createEl("button", {
       type: "button",
       cls: "ad-pill-action ad-pill-primary"
     });
-    const sendIcon = dispatchBtn.createSpan({ cls: "ad-icon-inline" });
-    setIcon(sendIcon, "send");
-    dispatchBtn.createSpan({ text: "Anki Dispatch" });
+    const plusIcon = dispatchBtn.createSpan({ cls: "ad-icon-inline" });
+    setIcon(plusIcon, "plus");
+    dispatchBtn.createSpan({ text: "Card" });
     dispatchBtn.addEventListener("mousedown", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -583,8 +564,8 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
     });
 
     this.floatingPillEl.removeClass("is-hidden");
-    const top = Math.max(12, rect.top - 42);
-    const left = Math.min(window.innerWidth - 220, Math.max(12, rect.left + rect.width / 2 - 95));
+    const top = Math.max(12, rect.top - 40);
+    const left = Math.min(window.innerWidth - 180, Math.max(12, rect.left + rect.width / 2 - 72));
     this.floatingPillEl.style.top = `${Math.round(top)}px`;
     this.floatingPillEl.style.left = `${Math.round(left)}px`;
   }
@@ -592,8 +573,6 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
   hideFloatingSelectionPill(): void {
     this.floatingPillEl?.addClass("is-hidden");
   }
-
-  // ─── Internal Helpers ──────────────────────────────────────────────────────
 
   private getCurrentEditorSelection(): string {
     const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -660,11 +639,7 @@ export default class AnkiDispatchPlugin extends Plugin implements StudioViewBrid
       cls: `ad-status-dot ${this.ankiOnline ? "is-online" : "is-offline"}`
     });
     const qLen = this.settings.pendingQueue.length;
-    const text = qLen > 0
-      ? `Anki · ${qLen} queued`
-      : this.ankiOnline
-        ? "Anki · Online"
-        : "Anki · Queue";
+    const text = qLen > 0 ? `Anki (${qLen})` : "Anki";
     this.statusBarEl.createSpan({ text });
   }
 
